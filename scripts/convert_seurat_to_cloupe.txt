@@ -1,0 +1,5769 @@
+# https://github.com/10XGenomics/loupeR
+
+##### First, activate conda env with R version compatible with loupeR package
+conda activate r-4.3.3
+
+
+##### Now start R
+
+library(loupeR)
+loupeR::setup()
+library(SeuratObject)
+library(SingleCellExperiment)
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1M + 2M) ("mismatched" samples)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M/heart_organoid_S1M_2M.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1M_2M"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1M + 2M, batch effects-corrected) ("mismatched" samples)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M_bec/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M_bec/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M_bec/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M_bec/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_bec",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M_bec")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1M_2M_bec/heart_organoid_S1M_2M_bec.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1M_2M_bec"
+)
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1/countMatrices.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1/dimred.rds")
+
+clusters <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1/clusters.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(clusters)
+
+clust <- clusters$clust
+dim(clust)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$cluster <- clust$res_0.2
+seurat_obj$sample <- Idents(seurat_obj)
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1/heart_organoid_S1.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S2)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S2/countMatrices.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S2/dimred.rds")
+
+clusters <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S2/clusters.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S2/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(clusters)
+
+clust <- clusters$clust
+dim(clust)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S2",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters and Samples to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$cluster <- clust$res_0.1
+seurat_obj$sample <- Idents(seurat_obj)
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S2")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S2/heart_organoid_S2.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S2"
+)
+
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S3)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S3/countMatrices.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S3/dimred.rds")
+
+clusters <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S3/clusters.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S3/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(clusters)
+
+clust <- clusters$clust
+dim(clust)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S3",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters and Samples to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$cluster <- clust$res_0.1
+seurat_obj$sample <- Idents(seurat_obj)
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S3")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S3/heart_organoid_S3.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S3"
+)
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3/heart_organoid_S1_2_3.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected))
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec/heart_organoid_S1_2_3_bec.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3/heart_organoid_S1_3.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3"
+)
+
+
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3 + 1M + 2M, batch effects-corrected))
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_1M_2M_bec/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_1M_2M_bec/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_1M_2M_bec/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_1M_2M_bec/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_1M_2M_bec",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+
+# Step 1: Download the whitelist
+url <- "https://github.com/pachterlab/kite/raw/master/docs/3M-february-2018.txt.gz"
+destfile <- "3M-february-2018.txt.gz"
+download.file(url, destfile)
+
+# Step 2: Read the gzipped file
+barcodes <- readLines(gzfile(destfile))
+
+# Step 3: Append "-1" to match standard 10x format
+barcodes_10x <- paste0(barcodes, "-1")
+
+# Step 4: Sample unique barcodes
+set.seed(123)
+new_barcodes <- sample(barcodes_10x, n_cells)
+
+# View results
+head(new_barcodes)
+length(unique(new_barcodes))
+
+
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(new_barcodes))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+/Users/jacek_marzec/Desktop/filtered_dim_reduction_Pericytes.png
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_1M_2M_bec")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_1M_2M_bec/heart_organoid_S1_2_3_1M_2M_bec.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_1M_2M_bec"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected and annotated)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_annot/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_annot/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_annot/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_annot/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+Cell_type <- metadata$Cell_type
+length(Cell_type)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec_annot",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$Cell_type <- Cell_type
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_annot")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_annot/heart_organoid_S1_2_3_bec_annot.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec_annot"
+)
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected, cardiomyocytes)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_cardiomyocytes/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_cardiomyocytes/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_cardiomyocytes/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_cardiomyocytes/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec_cardiomyocytes",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_cardiomyocytes")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_cardiomyocytes/heart_organoid_S1_2_3_bec_cardiomyocytes.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec_cardiomyocytes"
+)
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected, endothelial cells)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec_endothelial_cells",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells/heart_organoid_S1_2_3_bec_endothelial_cells.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec_endothelial_cells"
+)
+
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected, endothelial cells without cluster 1)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec_endothelial_cells_wo_clust_1",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1/heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec_endothelial_cells_wo_clust_1"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected, mesothelial epicardial cells)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.3
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec_mesothelial_epicardial_cells",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells/heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec_mesothelial_epicardial_cells"
+)
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected, mural cells)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mural_cells/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mural_cells/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mural_cells/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mural_cells/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec_mural_cells",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mural_cells")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_mural_cells/heart_organoid_S1_2_3_bec_mural_cells.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec_mural_cells"
+)
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 2 + 3, batch effects-corrected, EMT/epicardium-derived mesenchyme (EMT/EPDC))
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_EMT_EPDC/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_EMT_EPDC/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_EMT_EPDC/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_EMT_EPDC/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_2_3_bec_EMT_EPDC",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_EMT_EPDC")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_2_3_bec_EMT_EPDC/heart_organoid_S1_2_3_bec_EMT_EPDC.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_2_3_bec_EMT_EPDC"
+)
+
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, annotated)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_annot/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_annot/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_annot/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_annot/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+cell_type <- metadata$cell_type
+length(cell_type)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_annot",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$cell_type <- cell_type
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_annot")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_annot/heart_organoid_S1_3_annot.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_annot"
+)
+
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, mural cells)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_mural_cells/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_mural_cells/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_mural_cells/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_mural_cells/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_mural_cells",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_mural_cells")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_mural_cells/heart_organoid_S1_3_mural_cells.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_mural_cells"
+)
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, cardiomyocytes)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_cardiomyocytes/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_cardiomyocytes/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_cardiomyocytes/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_cardiomyocytes/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_cardiomyocytes",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_cardiomyocytes")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_cardiomyocytes/heart_organoid_S1_3_cardiomyocytes.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_cardiomyocytes"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, endothelial cells)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_endothelial_cells",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/heart_organoid_S1_3_endothelial_cells.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_endothelial_cells"
+)
+
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, epicardium/EPDCs)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust_res_0.1 <- metadata$clust_res_0.1
+clust_res_0.2 <- metadata$clust_res_0.2
+clust_res_0.3 <- metadata$clust_res_0.3
+clust_res_0.4 <- metadata$clust_res_0.4
+clust_res_0.5 <- metadata$clust_res_0.5
+length(clust_res_0.1)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_epicardium_EPDCs",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust_res_0.1 <- clust_res_0.1
+seurat_obj$clust_res_0.2 <- clust_res_0.2
+seurat_obj$clust_res_0.3 <- clust_res_0.3
+seurat_obj$clust_res_0.4 <- clust_res_0.4
+seurat_obj$clust_res_0.5 <- clust_res_0.5
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs/heart_organoid_S1_3_epicardium_EPDCs.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_epicardium_EPDCs"
+)
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, fibroblasts)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_fibroblasts/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_fibroblasts/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_fibroblasts/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_fibroblasts/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust_res_0.1 <- metadata$clust_res_0.1
+length(clust_res_0.1)
+clust_res_0.2 <- metadata$clust_res_0.2
+length(clust_res_0.2)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_fibroblasts",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust_res_0.1 <- clust_res_0.1
+seurat_obj$clust_res_0.2 <- clust_res_0.2
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_fibroblasts")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_fibroblasts/heart_organoid_S1_3_fibroblasts.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_fibroblasts"
+)
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, epicardium/EPDCs + fibroblasts)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_Epicardium_EPDCs_Fibroblasts",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_epicardium_EPDCs_fibroblasts"
+)
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, epicardium/EPDCs + fibroblasts + proliferative cells)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+cell_type <- metadata$cell_type
+length(cell_type)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$cell_type <- cell_type
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_cells"
+)
+
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, Epicardium/EPDCs + fibroblasts + proliferative + mural + endothelialcells)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells/hvgs.rds")
+
+
+# Also load results from trajectory inference analysis
+trajectory <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells/trajectory_inference/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells_trajectory_inference.rds")
+
+head(trajectory$Pseudotime)
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+cell_type <- metadata$cell_type
+length(cell_type)
+
+clust <- metadata$clust_res_0.1
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$cell_type <- cell_type
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# Add pseudotime as feature
+# Find the gene with the lowest average expression
+avg_expr <- Matrix::rowMeans(counts)
+gene_lowest <- names(which.min(avg_expr))
+cat("Gene with lowest expression:", gene_lowest, "\n")
+
+# Replace its expression values with pseudotime
+# Convert to dense matrix to speed up the process (if memory allows)
+dense_counts <- as.matrix(counts)        
+dense_counts[gene_lowest, ] <- trajectory$Pseudotime
+
+# Rename this gene to "PSEUDOTIME"
+rownames(dense_counts)[rownames(dense_counts) == gene_lowest] <- "PSEUDOTIME"
+
+# Convert dense matrix back to S4 object
+counts <- as(dense_counts, "dgCMatrix")  # Convert back to sparse
+
+head(counts["PSEUDOTIME", ])
+
+
+min(counts["PSEUDOTIME", ])
+max(counts["PSEUDOTIME", ])
+mean(counts["PSEUDOTIME", ])
+
+min(counts["TNNT2", ])
+max(counts["TNNT2", ])
+mean(counts["TNNT2", ])
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells/heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_epicardium_EPDCs_fibroblasts_proliferative_mural_endothelial_cells"
+)
+
+
+
+
+
+#############################################################################
+#
+#	Filtered data (S1 + 3, annotated, without “Endoderm-derived_epithelial_cells” and “Hepatic-derived_cells”)
+#
+#############################################################################
+
+
+countMatrices <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/settings/tokens/heart_organoid_S1_3_annot_heart/countMatrices.rds")
+
+metadata <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/settings/tokens/heart_organoid_S1_3_annot_heart/metadata.rds")
+
+dimred <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/settings/tokens/heart_organoid_S1_3_annot_heart/dimred.rds")
+
+hvgs <- readRDS("/mnt/scratch/home/jacek/applications/scstudio_Jacek/settings/tokens/heart_organoid_S1_3_annot_heart/hvgs.rds")
+
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+cell_type <- metadata$cell_type
+length(cell_type)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_annot_heart",
+)
+
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+
+# Download barcode whitelist
+
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["pca"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["umap"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["tsne"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "tSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["pca"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["tsne"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "tSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["umap"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$cell_type <- cell_type
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+
+
+head(seurat_obj)
+
+
+setwd("~/applications/scstudio_Jacek/settings/tokens/heart_organoid_S1_3_annot_heart")
+
+
+# Extract UMAP projection
+umap_coords <- Embeddings(seurat_obj, "umap")[, 1:2]
+colnames(umap_coords) <- c("UMAP_1", "UMAP_2")
+rownames(umap_coords) <- colnames(seurat_obj)
+
+# Wrap into named list
+#projections <- list(UMAP = umap_coords)
+
+
+# Extract t-SNE projection
+tsne_coords <- Embeddings(seurat_obj, "tsne")[, 1:2]
+colnames(tsne_coords) <- c("tSNE_1", "tSNE_2")
+rownames(tsne_coords) <- colnames(seurat_obj)
+
+# Wrap into a named list
+projections <- list(
+  UMAP = umap_coords,
+  tSNE = tsne_coords
+)
+
+
+# Get counts
+counts <- GetAssayData(seurat_obj, assay = "RNA", slot = "counts")
+
+
+# NOTE: Make sure that the file is not there yet! Otherwise louper command-line tool will complain ("Error in paste("\nIt looks like there was an issue with %s. For further information,",  : argument is missing, with no default" 
+# ("~/applications/scstudio_Jacek/settings/tokens/heart_organoid_S1_3_annot_heart/heart_organoid_S1_3_annot_heart.cloupe")
+
+create_loupe(
+  counts,
+  clusters = select_clusters(seurat_obj),
+  projections = projections,
+  output_name = "heart_organoid_S1_3_annot_heart"
+)
+
+
+
+
