@@ -13,7 +13,7 @@ This repository contains code and documentation used for the analysis of scRNA-s
 Two organoid samples were analysed:
 
 - **VEGFA (V-EMO)**
-- **PDGFBB (P-EMO)
+- **PDGFBB (P-EMO)**
 
 Single-cell libraries were prepared using the **10x Genomics Chromium Next GEM Single Cell 3′ Kit v3.1** and sequenced on an **Illumina NextSeq 2000**.  
 Raw data were processed with **Cell Ranger v9.0.1**, and downstream analyses were performed using **[scStudio](https://www.biorxiv.org/content/10.1101/2025.04.17.649161v1)**  and custom R scripts [R scripts](../scripts).
