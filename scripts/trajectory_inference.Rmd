@@ -1,0 +1,2155 @@
+---
+title: "Trajectory inference"
+author: 'Jacek'
+date: '`r Sys.Date()`'
+output: 
+  html_document:
+    keep_md: yes
+    code_download: true
+    code_folding: hide
+    theme: readable
+    css: trajectory_inference.css
+    toc: true
+    toc_float: true
+  rmdformats::material:
+    highlight: kate
+params:
+  inFolder: "~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells"
+  start_clust: NULL
+  clust_res: 0.1
+  omega: TRUE
+  genes: "PECAM1,CDH5,VWF2,RGCC,DLL4,PLVAP"
+  run_slingshot: TRUE
+  run_tscan: TRUE
+  run_monocle3: TRUE
+  outFolder: "~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/trajectory_inference"
+  report_name: "heart_organoid_S1_3_endothelial_cells_trajectory_inference"
+  seed_init: 99999999
+  knitr_verbose: FALSE
+  hide_code_btn: TRUE
+---
+
+```{r code_setup, echo = FALSE}
+##### Include or exclude the "Code" button allowing to "show"/"hide" code chunks from the report 
+if ( params$hide_code_btn ) {
+  writeLines(".btn { display: none ;", con = "trajectory_inference.css")
+} else {
+  writeLines(" ", con = "trajectory_inference.css")
+}
+
+##### Set the seed
+if ( params$seed_init == 99999999 ) {
+  seed <- sample(0:99999999, 1, replace = TRUE)
+} else {
+  seed <- params$seed_init
+}
+
+set.seed(seed)
+
+##### initiate chunks timing
+NOW <- Sys.time()
+
+##### Time chunks during knitting
+knitr::knit_hooks$set(timeit = function(before) {
+  
+  if (before) {
+    print(paste("Start:", Sys.time()))
+    NOW <<- Sys.time()
+  } else {
+    print(paste("Stop:", Sys.time()))
+    print(Sys.time() - NOW)
+  }
+})
+
+knitr::opts_chunk$set(timeit = TRUE)
+```
+
+```{r load_libraries, echo = FALSE, warning=FALSE, message=FALSE}
+library(devtools)
+library(monocle3)
+library(Seurat)
+library(SeuratWrappers)  # For conversion helper
+library(scater)
+library(TSCAN)
+library(slingshot)
+library(tradeSeq)
+library(scran)
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+library(grDevices)
+library(DT)
+library(pheatmap)
+```
+
+***
+
+Report summarising trajectory inference (**`r params$report_name`**) based on *[Slingshot](https://www.bioconductor.org/packages/release/bioc/html/slingshot.html){target="_blank"}*, *[TSCAN](https://bioconductor.org/packages/3.14/bioc/html/TSCAN.html){target="_blank"}* and  *[Monocle 3](https://cole-trapnell-lab.github.io/monocle3/){target="_blank"}* R packages.
+<br>
+Additionally, analyses were performed using permuted data (see **Permuted data** tabs) to evaluate whether the implemented methods could generate trajectories from random input, which would indicate a lack of robustness.
+<br>
+**NOTE**: **cluster `r params$start_clust`** is used as a starting point for computing the pseudotimes and drawing lineages.
+
+***
+
+<details>
+<summary>Input parameters</summary>
+<font size="2">
+
+* **inFolder**: `r params$inFolder`
+* **outFolder**: `r params$outFolder`
+* **report_name**: `r params$report_name`
+* **start_clust**: `r params$start_clust`
+* **clust_res**: `r params$clust_res`
+* **omega**: `r params$omega`
+* **genes**: `r params$genes`
+* **run_slingshot**: `r params$run_slingshot`
+* **run_tscan**: `r params$run_tscan`
+* **run_monocle3**: `r params$run_monocle3`
+* **seed**: `r seed`
+* **hide_code_btn**: `r params$hide_code_btn`
+
+</font> 
+</details>
+
+***
+
+<details>
+<summary>Introduction</summary>
+
+<br>
+
+Many biological processes manifest as a continuum of dynamic changes in the cellular state. The most obvious example is that of differentiation into increasingly specialized cell subtypes, but we might also consider phenomena like the cell cycle or immune cell activation that are accompanied by gradual changes in the cell’s transcriptome. We characterize these processes from single-cell expression data by identifying a “trajectory”, i.e., a path through the high-dimensional expression space that traverses the various cellular states associated with a continuous process like differentiation. In the simplest case, a trajectory will be a simple path from one point to another, but we can also observe more complex trajectories that branch to multiple endpoints.
+
+The “pseudotime” is defined as the positioning of cells along the trajectory that quantifies the relative activity or progression of the underlying biological process. For example, the pseudotime for a differentiation trajectory might represent the degree of differentiation from a pluripotent cell to a terminal state where cells with larger pseudotime values are more differentiated. This metric allows us to tackle questions related to the global population structure in a more quantitative manner. The most common application is to fit models to gene expression against the pseudotime to identify the genes responsible for generating the trajectory in the first place, especially around interesting branch events.
+
+In some cases, one is interested in identifying multiple, disjoint trajectories. Some methods, including *[Slingshot](https://www.bioconductor.org/packages/release/bioc/html/slingshot.html){target="_blank"}* and  *[TSCAN](https://bioconductor.org/packages/3.14/bioc/html/TSCAN.html){target="_blank"}*, handle this problem in the initial cluster-based minimum spanning tree (MST) construction by introducing an artificial cluster, called *omega*. This artificial cluster is separated from every real cluster by a fixed length, meaning that the maximum distance between any two real clusters is twice this length. Practically, this sets a limit on the maximum edge length allowable in the MST.
+
+</details>
+
+***
+
+
+```{r load_and_prep_data, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px"}
+
+genes <- unlist(strsplit(params$genes, split=',', fixed=TRUE))
+
+countMatrices <- readRDS(file = paste0(params$inFolder, "/countMatrices.rds"))
+#countMatrices <- readRDS("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/countMatrices.rds")
+
+metadata <- readRDS(paste0(params$inFolder, "/metadata.rds"))
+#metadata <- readRDS("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/metadata.rds")
+
+dimred <- readRDS(paste0(params$inFolder, "/dimred.rds"))
+#dimred <- readRDS("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/dimred.rds")
+
+hvgs <- readRDS(paste0(params$inFolder, "/hvgs.rds"))
+#hvgs <- readRDS("~/applications/scstudio_Jacek/clustering/tokens/heart_organoid_S1_3_endothelial_cells/hvgs.rds")
+
+names(countMatrices)
+
+dim(countMatrices[[1]])
+dim(countMatrices$rawCountMatrix)
+
+counts <- countMatrices$rawCountMatrix
+data.normalized <- countMatrices$normalization
+
+names(dimred)
+
+pca <- dimred[[1]]$pca$x
+dim(pca)
+
+tsne <- dimred$tsne$tsne
+dim(tsne)
+
+umap <- dimred$umap$umap
+dim(umap)
+
+names(metadata)
+
+clust_res <- paste0("clust_res_", params$clust_res)
+clust <- metadata[, clust_res]
+length(clust)
+
+percentage_mt_genes <- metadata$percentage_mt_genes
+length(percentage_mt_genes)
+
+doublets_score <- metadata$doublets_score
+length(doublets_score)
+
+dataset <- metadata$dataset
+length(dataset)
+
+total_features <- metadata$total_features
+length(total_features)
+
+library_size <- metadata$library_size
+length(library_size)
+
+library_size_normalization <- metadata$library_size_normalization
+length(library_size_normalization)
+
+names(hvgs)
+top_hvgs <- hvgs$top_hvgs
+length(top_hvgs)
+
+
+# 1. Create the Seurat object from counts
+
+seurat_obj <- CreateSeuratObject(
+  counts = counts,
+  assay = "RNA",
+  names.field = 1L,
+  names.delim = "_",
+  meta.data = NULL,
+  project = "S1_3_endothelial_cells",
+)
+
+# Make sure dimnames match the Seurat object
+all(rownames(counts) == rownames(seurat_obj))
+all(colnames(counts) == colnames(seurat_obj))
+
+
+# Set the "data" slot for the "RNA" assay
+seurat_obj[["RNA"]] <- SetAssayData(seurat_obj[["RNA"]], slot = "data", new.data = data.normalized)
+
+
+# Download barcode whitelist
+whitelist_1 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample1/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_2 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample2/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+whitelist_3 = read.table(gzfile("/mnt/scratch/home/jacek/data/heart_organoids/scRNA-seq/Sample3/outs/filtered_feature_bc_matrix/barcodes.tsv.gz"),sep="\t")
+
+# Combine all barcodes lists
+whitelist <- rbind(whitelist_1, whitelist_2, whitelist_3)
+
+# Number of cells
+n_cells <- ncol(seurat_obj)
+
+# Assign to cells in your matrix
+valid_barcodes <- unique(unlist(whitelist))[1:n_cells]
+colnames(seurat_obj) <- valid_barcodes
+
+
+# 2. Add variable features
+VariableFeatures(seurat_obj) <- top_hvgs
+
+
+# 3. Add dimensionality reductions
+
+# Add PCA
+# Make sure it is a numeric matrix with rownames = cell names
+
+pca <- as.matrix(pca)
+rownames(pca) <- colnames(seurat_obj)  # Ensure rows are cells
+
+seurat_obj[["PCA"]] <- Seurat::CreateDimReducObject(
+  embeddings = pca,
+  key = "PC_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add UMAP
+umap <- as.matrix(umap)
+
+# Set rownames of umap to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(umap) <- colnames(seurat_obj)
+
+seurat_obj[["UMAP"]] <- Seurat::CreateDimReducObject(
+  embeddings = umap,
+  key = "UMAP_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add t-SNE
+tsne <- as.matrix(tsne)
+
+# Set rownames of tsne to match Seurat cell names (i.e., colnames of the count matrix)
+rownames(tsne) <- colnames(seurat_obj)
+
+# Now you can safely create and add the tsne slot
+seurat_obj[["TSNE"]] <- Seurat::CreateDimReducObject(
+  embeddings = tsne,
+  key = "TSNE_",
+  assay = DefaultAssay(seurat_obj)
+)
+
+
+# Add PCA
+#seurat_obj[["PCA"]] <- CreateDimReducObject(embeddings = as.matrix(pca), key = "PC_", assay = DefaultAssay(seurat_obj))
+
+# Add t-SNE
+#seurat_obj[["TSNE"]] <- CreateDimReducObject(embeddings = as.matrix(tsne), key = "TSNE_", assay = DefaultAssay(seurat_obj))
+
+# Add UMAP
+#seurat_obj[["UMAP"]] <- CreateDimReducObject(embeddings = as.matrix(umap), key = "UMAP_", assay = DefaultAssay(seurat_obj))
+
+
+# 4. Add Clusters, Dataset etc to Seurat Object
+
+# Add the cluster information as metadata
+seurat_obj$dataset <- dataset
+seurat_obj$clust <- clust
+seurat_obj$percentage_mt_genes <- percentage_mt_genes
+seurat_obj$doublets_score <- doublets_score
+seurat_obj$total_features <- total_features
+seurat_obj$library_size <- library_size
+seurat_obj$library_size_normalization <- library_size_normalization
+
+##### Convert Seurat object to SingleCellExperiment object
+sce_obj <- as.SingleCellExperiment(seurat_obj)
+colLabels(sce_obj) <- colData(sce_obj)$clust
+
+##### Create folder for results
+output_dir <- params$outFolder
+
+if (file.exists(output_dir)){
+    setwd(file.path(output_dir))
+} else {
+    dir.create(file.path(output_dir))
+    setwd(file.path(output_dir))
+    
+}
+```
+
+
+```{r permute_data, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px"}
+
+# Get log-normalized data matrix
+expr_matrix <- GetAssayData(seurat_obj, slot = "data")
+
+# Permute expression values for each gene (across cells)
+perm_expr <- apply(expr_matrix, 1, sample)
+perm_expr <- t(perm_expr)  # transpose back to original shape
+colnames(perm_expr) <- colnames(expr_matrix)
+
+# Set the permuted matrix back to the 'data' slot
+seurat_obj_permuted <- seurat_obj
+seurat_obj_permuted <- SetAssayData(seurat_obj_permuted, slot = "data", new.data = perm_expr)
+
+
+# Assume 'seurat_obj' is your existing Seurat object
+expr_matrix <- GetAssayData(seurat_obj, slot = "counts")
+
+# Permute expression values for each gene (row)
+perm_expr <- expr_matrix
+perm_expr <- apply(perm_expr, 1, sample)  # shuffle each row (gene)
+perm_expr <- t(perm_expr)  # transpose back to original dimensions
+colnames(perm_expr) <- colnames(expr_matrix)
+
+# Assign permuted data to a new Seurat object
+seurat_obj_permuted <- seurat_obj
+seurat_obj_permuted <- SetAssayData(seurat_obj_permuted, slot = "counts", new.data = perm_expr)
+
+
+# Clear other slots
+# If we are performing downstream analysis after permutation, consider resetting processed data like PCA/UMAP to avoid using outdated representations:
+
+seurat_obj_permuted@reductions <- list()  # remove PCA/UMAP
+seurat_obj_permuted@graphs <- list()      # remove neighbor graphs
+
+# Re-run normalization and PCA/UMAP on the permuted Seurat object before downstream analysis
+seurat_obj_permuted <- NormalizeData(seurat_obj_permuted)
+seurat_obj_permuted <- FindVariableFeatures(seurat_obj_permuted)
+seurat_obj_permuted <- ScaleData(seurat_obj_permuted)
+seurat_obj_permuted <- RunPCA(seurat_obj_permuted)
+seurat_obj_permuted <- RunTSNE(seurat_obj_permuted, dims = 1:10)
+seurat_obj_permuted <- RunUMAP(seurat_obj_permuted, dims = 1:10)
+
+seurat_obj_permuted@reductions[["PCA"]] <- seurat_obj_permuted@reductions[["pca"]]
+seurat_obj_permuted@reductions[["TSNE"]] <- seurat_obj_permuted@reductions[["tsne"]]
+seurat_obj_permuted@reductions[["UMAP"]] <- seurat_obj_permuted@reductions[["umap"]]
+
+# Remove the original "pca" reduction
+seurat_obj_permuted@reductions[["pca"]] <- NULL
+seurat_obj_permuted@reductions[["tsne"]] <- NULL
+seurat_obj_permuted@reductions[["umap"]] <- NULL
+
+# Add the cluster information as metadata
+seurat_obj_permuted$dataset <- dataset
+seurat_obj_permuted$clust <- clust
+seurat_obj_permuted$percentage_mt_genes <- percentage_mt_genes
+seurat_obj_permuted$doublets_score <- doublets_score
+seurat_obj_permuted$total_features <- total_features
+seurat_obj_permuted$library_size <- library_size
+seurat_obj_permuted$library_size_normalization <- library_size_normalization
+
+##### Convert Seurat object to SingleCellExperiment object
+sce_obj_permuted <- as.SingleCellExperiment(seurat_obj_permuted)
+colLabels(sce_obj_permuted) <- colData(sce_obj_permuted)$clust
+```
+
+## Slingshot {.tabset}
+
+### Original data {.tabset}
+
+#### Inferred lineage {.tabset}
+
+Given a reduced-dimensional data matrix and a vector of cluster labels *[Slingshot](https://www.bioconductor.org/packages/release/bioc/html/slingshot.html){target="_blank"}* performs trajectory inference by (1) identifying lineage structure with a cluster-based minimum spanning tree (MST), and (2) constructing smooth representations of each lineage using simultaneous principal curves. The graph of this structure is learned by fitting a (possibly constrained) MST on the clusters, plus the artificial cluster, *omega*, which is a fixed distance away from every real cluster. This effectively limits the maximum branch length in the MST to the chosen distance, meaning that the output may contain multiple trees. Once the graph is known, lineages are identified in any tree with at least two clusters. For a given tree, if there is an annotated starting cluster, every possible path out of a starting cluster and ending in a leaf that isn't another starting cluster will be returned. If no starting cluster is annotated, one will be chosen by a heuristic method.
+
+##### Pseudotime
+
+Inferred lineage for the single-trajectory data with points colored by pseudotime.
+
+```{r slingshot_lineage_pseudotime, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_slingshot}
+
+##### Trajectory inference
+sce_obj <- slingshot(sce_obj, clusterLabels = 'clust', reducedDim = 'TSNE', start.clus = params$start_clust)
+
+# Inferred lineage for the single-trajectory data with points colored by pseudotime
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce_obj$slingPseudotime_1, breaks=100)]
+
+plot(reducedDims(sce_obj)$TSNE, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce_obj), lwd=2, col='black')
+
+plot(reducedDims(sce_obj)$TSNE, col = plotcol, pch=16, asp = 1)
+```
+
+##### Clusters
+
+Inferred lineage for the single-trajectory data with points colored by clusters.
+
+```{r slingshot_lineage_clust, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_slingshot}
+
+#plot(reducedDims(sce_obj)$TSNE, col = brewer.pal(9,'Set1')[sce_obj$clust], pch=16, asp = 1)
+#lines(SlingshotDataSet(sce_obj), lwd=2, type = 'lineages', col = 'black')
+
+##### Identifying global lineage structure
+
+lin1 <- getLineages(reducedDims(sce_obj)$TSNE, colData(sce_obj)$clust, start.clus = params$start_clust)
+lin1
+
+# Constructing smooth curves and ordering cells
+crv1 <- getCurves(lin1)
+
+plot(reducedDims(sce_obj)$TSNE, col = brewer.pal(9,"Set1")[colData(sce_obj)$clust], asp = 1, pch = 16)
+lines(SlingshotDataSet(crv1), lwd = 3, col = 'black', show.constraints = TRUE)
+
+plot(reducedDims(sce_obj)$TSNE, col = brewer.pal(9,"Set1")[colData(sce_obj)$clust], asp = 1, pch = 16)
+```
+
+```{r slingshot_associationTest, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval=FALSE}
+
+##### Identifying temporally dynamic genes
+
+# fit negative binomial GAM
+#sce_obj <- fitGAM(sce_obj)
+
+# test for dynamic expression
+#ATres <- associationTest(sce_obj)
+
+#topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250]
+#pst.ord <- order(sce_obj$slingPseudotime_1, na.last = NA)
+#heatdata <- assays(sce_obj)$counts[topgenes, pst.ord]
+#heatclus <- sce_obj$clust[pst.ord]
+
+#heatmap(log1p(heatdata), Colv = NA,
+#        ColSideColors = brewer.pal(9,"Set1")[heatclus])
+```
+
+***
+
+#### Lineage structure
+
+In order to identify global lineage structure *[Slingshot](https://www.bioconductor.org/packages/release/bioc/html/slingshot.html){target="_blank"}* maps connections between adjacent clusters using a minimum spanning tree (MST) and identifies paths through these connections that represent lineages. The output is a *PseudotimeOrdering* containing the inputs as well as the inferred MST (represented by an igraph object) and lineages (ordered vectors of cluster names). This analysis can be performed in an entirely unsupervised manner or in a semi-supervised manner by specifying known initial and terminal point clusters. If no starting point is specified, slingshot selects one based on parsimony, maximizing the number of clusters shared between lineages before a split. If there are no splits or multiple clusters produce the same parsimony score, the starting cluster is chosen arbitrarily. However, it is generally recommended to specificy an initial cluster based on prior knowledge (either time of sample collection or established gene markers). This specification will have no effect on how the MST is constructed, but it will impact how branching curves are constructed.
+
+```{r slingshot_lineage_structure, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_slingshot}
+
+plot(reducedDims(sce_obj)$TSNE, col = brewer.pal(9,"Set1")[colData(sce_obj)$clust], asp = 1, pch = 16)
+lines(SlingshotDataSet(lin1), lwd = 3, col = 'black')
+
+
+#lin2 <- getLineages(reducedDims(sce_obj)$TSNE, colData(sce_obj)$clust, start.clus=params$start_clust, end.clus = '2')
+
+#plot(reducedDims(sce_obj)$TSNE, col = brewer.pal(9,"Set1")[colData(sce_obj)$clust], asp = 1, pch = 16)
+#lines(SlingshotDataSet(lin2), lwd = 3, col = 'black', show.constraints = TRUE)
+```
+
+***
+
+### Permuted data {.tabset}
+
+#### Inferred lineage {.tabset}
+
+Given a reduced-dimensional data matrix and a vector of cluster labels *[Slingshot](https://www.bioconductor.org/packages/release/bioc/html/slingshot.html){target="_blank"}* performs trajectory inference by (1) identifying lineage structure with a cluster-based minimum spanning tree (MST), and (2) constructing smooth representations of each lineage using simultaneous principal curves. The graph of this structure is learned by fitting a (possibly constrained) MST on the clusters, plus the artificial cluster, which is a fixed distance away from every real cluster. This effectively limits the maximum branch length in the MST to the chosen distance, meaning that the output may contain multiple trees. Once the graph is known, lineages are identified in any tree with at least two clusters. For a given tree, if there is an annotated starting cluster, every possible path out of a starting cluster and ending in a leaf that isn't another starting cluster will be returned. If no starting cluster is annotated, one will be chosen by a heuristic method.
+
+##### Pseudotime
+
+Inferred lineage for the single-trajectory data with points colored by pseudotime.
+
+```{r slingshot_lineage_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_slingshot}
+
+##### Trajectory inference
+sce_obj_permuted <- slingshot(sce_obj_permuted, clusterLabels = 'clust', reducedDim = 'TSNE', start.clus = params$start_clust)
+
+# Inferred lineage for the single-trajectory data with points colored by pseudotime
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce_obj_permuted$slingPseudotime_1, breaks=100)]
+
+plot(reducedDims(sce_obj_permuted)$TSNE, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce_obj_permuted), lwd=2, col='black')
+```
+
+##### Clusters
+
+Inferred lineage for the single-trajectory data with points colored by clusters.
+
+```{r slingshot_lineage_clust_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_slingshot}
+
+#plot(reducedDims(sce_obj_permuted)$TSNE, col = brewer.pal(9,'Set1')[sce_obj_permuted$clust], pch=16, asp = 1)
+#lines(SlingshotDataSet(sce_obj_permuted), lwd=2, type = 'lineages', col = 'black')
+
+##### Identifying global lineage structure
+
+lin1 <- getLineages(reducedDims(sce_obj_permuted)$TSNE, colData(sce_obj_permuted)$clust, start.clus = params$start_clust)
+lin1
+
+# Constructing smooth curves and ordering cells
+crv1 <- getCurves(lin1)
+
+plot(reducedDims(sce_obj_permuted)$TSNE, col = brewer.pal(9,"Set1")[colData(sce_obj_permuted)$clust], asp = 1, pch = 16)
+lines(SlingshotDataSet(crv1), lwd = 3, col = 'black', show.constraints = TRUE)
+```
+
+```{r slingshot_associationTest_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval=FALSE}
+
+##### Identifying temporally dynamic genes
+
+# fit negative binomial GAM
+#sce_obj_permuted <- fitGAM(sce_obj_permuted)
+
+# test for dynamic expression
+#ATres <- associationTest(sce_obj_permuted)
+
+#topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250]
+#pst.ord <- order(sce_obj_permuted$slingPseudotime_1, na.last = NA)
+#heatdata <- assays(sce_obj_permuted)$counts[topgenes, pst.ord]
+#heatclus <- sce_obj_permuted$clust[pst.ord]
+
+#heatmap(log1p(heatdata), Colv = NA,
+#        ColSideColors = brewer.pal(9,"Set1")[heatclus])
+```
+
+***
+
+#### Lineage structure
+
+In order to identify global lineage structure *[Slingshot](https://www.bioconductor.org/packages/release/bioc/html/slingshot.html){target="_blank"}* maps connections between adjacent clusters using a minimum spanning tree (MST) and identifies paths through these connections that represent lineages. The output is a *PseudotimeOrdering* containing the inputs as well as the inferred MST (represented by an igraph object) and lineages (ordered vectors of cluster names). This analysis can be performed in an entirely unsupervised manner or in a semi-supervised manner by specifying known initial and terminal point clusters. If no starting point is specified, slingshot selects one based on parsimony, maximizing the number of clusters shared between lineages before a split. If there are no splits or multiple clusters produce the same parsimony score, the starting cluster is chosen arbitrarily. However, it is generally recommended to specificy an initial cluster based on prior knowledge (either time of sample collection or established gene markers). This specification will have no effect on how the MST is constructed, but it will impact how branching curves are constructed.
+
+```{r slingshot_lineage_structure_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_slingshot}
+
+plot(reducedDims(sce_obj_permuted)$TSNE, col = brewer.pal(9,"Set1")[colData(sce_obj_permuted)$clust], asp = 1, pch = 16)
+lines(SlingshotDataSet(lin1), lwd = 3, col = 'black')
+
+#lin2 <- getLineages(reducedDims(sce_obj_permuted)$TSNE, colData(sce_obj_permuted)$clust, start.clus=params$start_clust, end.clus = '2')
+
+#plot(reducedDims(sce_obj_permuted)$TSNE, col = brewer.pal(9,"Set1")[colData(sce_obj_permuted)$clust], asp = 1, pch = 16)
+#lines(SlingshotDataSet(lin2), lwd = 3, col = 'black', show.constraints = TRUE)
+```
+
+***
+
+## TSCAN {.tabset}
+
+### Original data {.tabset}
+
+#### Inferred lineage {.tabset}
+
+The *[TSCAN](https://bioconductor.org/packages/3.14/bioc/html/TSCAN.html){target="_blank"}* algorithm uses a simple yet effective approach to trajectory reconstruction. It uses the clustering to summarize the data into a smaller set of discrete units, computes cluster centroids by averaging the coordinates of its member cells, and then forms the minimum spanning tree (MST) across those centroids. The MST is simply an undirected acyclic graph that passes through each centroid exactly once and is thus the most parsimonious structure that captures the transitions between clusters.
+
+##### Pseudotime
+
+t-SNE plot with each point indicating a cell and colored according to its pseudotime assignment. The MST obtained using a TSCAN-like algorithm is overlaid on top.
+ 
+```{r tscan_lineage_pseudotime, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+##### Convert Seurat object to SingleCellExperiment object
+sce_obj <- as.SingleCellExperiment(seurat_obj)
+
+# colLabels
+colLabels(sce_obj) <- colData(sce_obj)$clust
+
+by.cluster <- aggregateAcrossCells(sce_obj, ids=colData(sce_obj)$clust)
+centroids <- reducedDim(by.cluster, "PCA")
+
+# Set clusters=NULL as we have already aggregated above.
+mst <- TSCAN::createClusterMST(centroids, outgroup=params$omega, clusters=NULL)
+line.data <- reportEdges(by.cluster, mst=mst, clusters=NULL, use.dimred="TSNE")
+
+
+map.tscan <- mapCellsToEdges(sce_obj, mst=mst, use.dimred="PCA")
+tscan.pseudo <- orderCells(map.tscan, mst=mst)
+head(tscan.pseudo)
+
+#common.pseudo <- averagePseudotime(tscan.pseudo, outgroup=params$omega) 
+#plotTSNE(sce_obj, colour_by=I(common.pseudo), 
+#        text_by="label", text_colour="red") +
+#    geom_line(data=line.data, mapping=aes(x= TSNE_1, y= TSNE_2, group=edge))
+
+
+# Run a minimum spanning tree (MST) on cluster centroids to provide a pseudotime ordering of cells
+pseudo.mnn <- TSCAN::quickPseudotime(sce_obj, use.dimred="PCA", outgroup=params$omega, start=params$start_clust)
+mnn.pseudo <- averagePseudotime(pseudo.mnn$ordering)
+
+##### Add pseudotime to sce object
+sce_obj$Pseudotime <- mnn.pseudo
+
+plotTSNE(sce_obj, colour_by=I(mnn.pseudo), text_by="label", text_colour="red") +
+    geom_line(data=pseudo.mnn$connected$TSNE, mapping=aes(x= TSNE_1, y= TSNE_2, group=edge))
+
+plotTSNE(sce_obj, colour_by=I(mnn.pseudo))
+
+#plot(pseudo.mnn$mst)
+```
+
+***
+
+##### Clusters
+
+t-SNE plot with each point indicating a cell and colored according to its clusters assignment. The MST obtained using a TSCAN-like algorithm is overlaid on top.
+ 
+```{r tscan_lineage_clust, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+plotTSNE(sce_obj, colour_by="clust", text_by="label", text_colour="red") + 
+    geom_line(data=line.data, mapping=aes(x=TSNE_1, y=TSNE_2, group=edge))
+
+plotTSNE(sce_obj, colour_by="clust")
+
+#plot(pseudo.mnn$mst)
+```
+
+```{r tscan_tweaking_mst, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval=FALSE}
+##### Tweaking the MST
+
+pseudo.og <- TSCAN::quickPseudotime(sce_obj, use.dimred="PCA", outgroup=params$omega, start=params$start_clust)
+plot(pseudo.og$mst)
+
+pseudo.mnn <- TSCAN::quickPseudotime(sce_obj, use.dimred="PCA", start=params$start_clust, with.mnn=TRUE)
+mnn.pseudo <- averagePseudotime(pseudo.mnn$ordering)
+plotTSNE(sce_obj, colour_by=I(mnn.pseudo), text_by="label", text_colour="red") +
+    geom_line(data=pseudo.mnn$connected$TSNE, mapping=aes(x= TSNE_1, y= TSNE_2, group=edge))
+
+#### Principal curves
+
+sce.sling <- slingshot(sce_obj, reducedDim='PCA', start.clus = params$start_clust)
+head(sce.sling$slingPseudotime_1)
+
+embedded <- embedCurves(sce.sling, "TSNE")
+embedded <- slingCurves(embedded)[[1]] # only 1 path.
+embedded <- data.frame(embedded$s[embedded$ord,])
+
+plotTSNE(sce.sling, colour_by="slingPseudotime_1") +
+    geom_path(data=embedded, aes(x= TSNE_1, y= TSNE_2), size=1.2)
+
+
+sce.sling2 <- slingshot(sce_obj, cluster=colLabels(sce_obj), reducedDim='PCA', start.clus = params$start_clust)
+pseudo.paths <- slingPseudotime(sce.sling2)
+head(pseudo.paths)
+
+sce_obj <- runUMAP(sce_obj, dimred="PCA")
+reducedDim(sce.sling2, "UMAP") <- reducedDim(sce_obj, "UMAP")
+
+# Taking the rowMeans just gives us a single pseudo-time for all cells. Cells
+# in segments that are shared across paths have similar pseudo-time values in 
+# all paths anyway, so taking the rowMeans is not particularly controversial.
+shared.pseudo <- rowMeans(pseudo.paths, na.rm=TRUE)
+
+# Need to loop over the paths and add each one separately.
+gg <- plotUMAP(sce.sling2, colour_by=I(shared.pseudo))
+embedded <- embedCurves(sce.sling2, "UMAP")
+embedded <- slingCurves(embedded)
+for (path in embedded) {
+    embedded <- data.frame(path$s[path$ord,])
+    gg <- gg + geom_path(data=embedded, aes(x= UMAP1, y= UMAP2), size=1.2)
+}
+
+gg
+
+curve.assignments <- slingBranchID(sce.sling2)
+table(curve.assignments)
+
+sce.sling3 <- slingshot(sce_obj, cluster=colLabels(sce_obj), 
+    reducedDim='PCA', start.clus = params$start_clust, approx_points=100)
+pseudo.paths3 <- slingPseudotime(sce.sling3)
+head(pseudo.paths3)
+
+sce.sling4 <- slingshot(sce_obj, cluster=colLabels(sce_obj), 
+    reducedDim='PCA', start.clus = params$start_clust, approx_points=100, omega=params$omega)
+pseudo.paths4 <- slingPseudotime(sce.sling4)
+head(pseudo.paths4)
+
+shared.pseudo <- rowMeans(pseudo.paths, na.rm=TRUE)
+gg <- plotUMAP(sce.sling4, colour_by=I(shared.pseudo))
+embedded <- embedCurves(sce.sling4, "UMAP")
+embedded <- slingCurves(embedded)
+for (path in embedded) {
+    embedded <- data.frame(path$s[path$ord,])
+    gg <- gg + geom_path(data=embedded, aes(x= UMAP1, y= UMAP2), size=1.2)
+}
+gg
+```
+
+***
+
+#### Genes of interest {.tabset}
+
+##### Heatmap
+
+Heatmap of the expression of the user-defined genes. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r gois_heatmap, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Extract expression and pseudotime
+# Suppose you have pseudotime stored in metadata
+pseudotime <- sce_obj$Pseudotime  # replace with actual column
+
+annotation <- seurat_obj@meta.data[, c("dataset", "clust", "percentage_mt_genes", "library_size", "nCount_RNA", "nFeature_RNA", "doublets_score")]
+annotation <- cbind(annotation, pseudotime)
+
+
+# Extract scaled expression data
+heatmap_data <- FetchData(seurat_obj, vars = genes)
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj$Pseudotime)
+plotHeatmap(sce_obj[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=genes,
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+##### Expression plots
+
+Expression of the user-defined genes plotted as a function of the increasing pseudotime.
+
+```{r gois_smoothed_curves, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Extract scaled expression for these genes
+expr_mat <- FetchData(seurat_obj, vars = genes)
+
+# Combine with pseudotime
+df <- cbind(pseudotime = pseudotime, expr_mat) %>%
+  tidyr::pivot_longer(cols = all_of(genes), 
+                      names_to = "gene", values_to = "expression")
+
+ggplot(df, aes(x = pseudotime, y = expression, color = gene)) +
+  geom_smooth(se = FALSE, method = "loess", span = 1) +
+  theme_classic() +
+  labs(x = "Pseudotime", y = "Expression", color = "Gene") +
+  theme(legend.position = "right")
+
+
+# Faceted Plots
+# If overlapping curves are too busy, facet each gene separately:
+ggplot(df, aes(x = pseudotime, y = expression)) +
+  geom_smooth(se = FALSE, color = "darkred", method = "loess") +
+  facet_wrap(~ gene, scales = "fixed", ncol = 3) +  # FIXED y-axis
+  theme_bw() +
+  labs(x = "Pseudotime", y = "Expression")
+```
+
+***
+
+##### Genes of interest (Z-scores)
+
+Expression (Z-scores) of the user-defined genes plotted as a function of the increasing pseudotime.
+
+```{r gois_smoothed_curves_z, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+df <- df %>%
+  group_by(gene) %>%
+  mutate(expression_scaled = scale(expression))
+
+ggplot(df, aes(x = pseudotime, y = expression_scaled, color = gene)) +
+  geom_smooth(se = FALSE, method = "loess", span = 1) +
+  theme_classic() +
+  labs(x = "Pseudotime", y = "Expression", color = "Gene") +
+  theme(legend.position = "right")
+
+
+ggplot(df, aes(x = pseudotime, y = expression_scaled)) +
+  geom_smooth(se = FALSE, color = "darkred", method = "loess") +
+  facet_wrap(~ gene, scales = "fixed") +
+  theme_bw() +
+  labs(x = "Pseudotime", y = "Expression (Z-score)")
+```
+
+***
+
+##### t-SNE plots
+
+Per-gene t-SNE plots with each point indicating a cell and colored according to expression of use-defined genes.
+
+```{r gois_tsne_plot, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Generate one plot per gene (faceted automatically if combine=TRUE)
+FeaturePlot(seurat_obj,
+            features = genes,
+            reduction = "TSNE",     # use t-SNE coordinates
+            cols = c("grey", "darkorchid4"),  # low → high expression
+            combine = TRUE,         # one panel per gene
+            pt.size = 0.1) & 
+  theme(
+    plot.title = element_text(size=12),
+    axis.title = element_text(size=10),
+    axis.text  = element_text(size=8),
+    legend.text = element_text(size=8),
+    legend.title = element_text(size=9)
+  )
+```
+
+***
+
+#### Changes along a trajectory {.tabset}
+
+In order to identify genes with significant changes with respect to individua pseudotimes a natural spline is fitted to the expression of each gene, allowing us to model a range of non-linear relationships in the data. An analysis of variance (ANOVA) is then performed to determine if any of the spline coefficients are significantly non-zero, i.e., there is some significant trend with respect to pseudotime.
+<br>
+**NOTE**: The table and plots presented below indicate change in expression levels in comparison to **cluster `r params$start_clust`**.
+
+##### Table
+
+```{r tscan_anova_test_pseudotime_table, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Include the pseudotimes in the colData.
+sce_obj_anova <- sce_obj
+sce_obj_anova$Pseudotime <- pathStat(tscan.pseudo)[,1]
+
+pseudo <- TSCAN::testPseudotime(sce_obj_anova, pseudotime=sce_obj_anova$Pseudotime)
+pseudo$SYMBOL <- rownames(sce_obj_anova)
+sorted <- pseudo[order(pseudo$logFC, decreasing = TRUE),]
+#sorted <- pseudo[order(pseudo$p.value, decreasing = FALSE),]
+
+##### Generate a table with features annotations
+dt.table <- DT::datatable( data = as.data.frame(sorted), filter = list(position = 'top', clear = FALSE), rownames = TRUE, extensions = c('Buttons','Scroller','FixedColumns'), options = list(pageLength = 10, dom = 'Bfrltip', buttons = c('excel', 'csv', 'pdf','copy'), scrollX = TRUE, fixedColumns = list(leftColumns = 1), deferRender = TRUE, scrollY = "333px", scroller = TRUE), width = 800, height = 550, caption = htmltools::tags$caption( style = 'caption-side: top; text-align: left; color:grey; font-size:100%; width: 100%'), escape = FALSE) %>%
+  DT::formatStyle( columns = colnames(as.data.frame(sorted)), 'text-align' = 'center' )
+```
+
+```{r tscan_anova_test_pseudotime_table_print, echo = FALSE, warning=FALSE, message=FALSE, results='asis', out.width = "800px", eval = params$run_tscan}
+
+dt.table
+```
+
+***
+
+##### Heatmaps {.tabset}
+
+###### Top genes
+
+Heatmap of the expression of the top 25 genes that increase and decrease in expression with increasing pseudotime. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r tscan_anova_test_pseudotime_plots_heatmap, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+up.right <- sorted[sorted$logFC > 0, ]
+up.right <- up.right[ 1:25, ]
+
+up.left <- sorted[sorted$logFC < 0,]
+up.left <- up.left[ 1:25, ]
+
+top_genes <- c(up.right$SYMBOL, up.left$SYMBOL)
+
+# Remove MALAT1 from visualization since it appears ubiquitously expressed across cells and dominates the expression on the plots. It may dilute color scales in heatmaps because its expression range is orders of magnitude higher than other genes
+top_genes <- setdiff(top_genes, "MALAT1")
+
+# Extract expression and pseudotime
+# Suppose you have pseudotime stored in metadata
+pseudotime <- sce_obj$Pseudotime  # replace with actual column
+
+annotation <- seurat_obj@meta.data[, c("dataset", "clust", "percentage_mt_genes", "library_size", "nCount_RNA", "nFeature_RNA", "doublets_score")]
+annotation <- cbind(annotation, pseudotime)
+
+# Extract scaled expression data for selected genes
+heatmap_data <- FetchData(seurat_obj, vars = top_genes)
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj$Pseudotime)
+plotHeatmap(sce_obj[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=top_genes,
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+###### Up-regulated genes
+
+Heatmap of the expression of the top 50 genes that increase in expression with increasing pseudotime. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r tscan_anova_test_pseudotime_plots_heatmap_up, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+up.right <- sorted[ sorted$logFC > 0,]
+head(up.right, 6)
+
+# Remove MALAT1 from visualization since it appears ubiquitously expressed across cells and dominates the expression on the plots. It may dilute color scales in heatmaps because its expression range is orders of magnitude higher than other genes
+up.right <- up.right[ up.right$SYMBOL != "MALAT1" ,]
+
+# Extract scaled expression data for selected genes
+heatmap_data <- FetchData(seurat_obj, vars = head(up.right$SYMBOL, 50))
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj$Pseudotime)
+plotHeatmap(sce_obj[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=head(up.right$SYMBOL, 50),
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+###### Down-regulated genes
+
+Heatmap of the expression of the top 50 genes that decrease in expression with increasing pseudotime. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r tscan_anova_test_pseudotime_plots_heatmap_down, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+up.left <- sorted[sorted$logFC < 0,]
+head(up.left, 6)
+
+
+# Remove MALAT1 from visualization since it appears ubiquitously expressed across cells and dominates the expression on the plots. It may dilute color scales in heatmaps because its expression range is orders of magnitude higher than other genes
+up.left <- up.left[ up.left$SYMBOL != "MALAT1" ,]
+
+# Extract scaled expression data for selected genes
+heatmap_data <- FetchData(seurat_obj, vars = head(up.left$SYMBOL, 50))
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj$Pseudotime)
+plotHeatmap(sce_obj[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=head(up.left$SYMBOL, 50),
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+##### Gene plots {.tabset}
+
+###### Up-regulated genes
+
+Expression of the top 6 genes that increase in expression with increasing pseudotime. Each point represents a cell that is mapped to this path and is colored by the assigned cluster.
+
+```{r tscan_anova_test_pseudotime_plots_up, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+best <- head(up.right$SYMBOL, 6)
+plotExpression(sce_obj, features=best, swap_rownames=NULL,
+    x="Pseudotime", colour_by="label")
+```
+
+***
+
+###### Down-regulated genes
+
+Expression of the top 6 genes that decrease in expression with increasing pseudotime. Each point represents a cell that is mapped to this path and is colored by the assigned cluster.
+
+```{r tscan_anova_test_pseudotime_plots_down, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+best <- head(up.left$SYMBOL, 6)
+plotExpression(sce_obj, features=best, swap_rownames=NULL,
+    x="Pseudotime", colour_by="label")
+```
+
+***
+
+### Permuted data {.tabset}
+
+#### Inferred lineage {.tabset}
+
+The *[TSCAN](https://bioconductor.org/packages/3.14/bioc/html/TSCAN.html){target="_blank"}* algorithm uses a simple yet effective approach to trajectory reconstruction. It uses the clustering to summarize the data into a smaller set of discrete units, computes cluster centroids by averaging the coordinates of its member cells, and then forms the minimum spanning tree (MST) across those centroids. The MST is simply an undirected acyclic graph that passes through each centroid exactly once and is thus the most parsimonious structure that captures the transitions between clusters.
+
+##### Pseudotime
+
+t-SNE plot with each point indicating a cell and colored according to its pseudotime assignment. The MST obtained using a TSCAN-like algorithm is overlaid on top.
+ 
+```{r tscan_lineage_pseudotime_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+##### Convert Seurat object to SingleCellExperiment object
+sce_obj_permuted <- as.SingleCellExperiment(seurat_obj_permuted)
+
+# colLabels
+colLabels(sce_obj_permuted) <- colData(sce_obj_permuted)$clust
+
+by.cluster <- aggregateAcrossCells(sce_obj_permuted, ids=colData(sce_obj_permuted)$clust)
+centroids <- reducedDim(by.cluster, "PCA")
+
+# Set clusters=NULL as we have already aggregated above.
+mst <- TSCAN::createClusterMST(centroids, outgroup=params$omega, clusters=NULL)
+line.data <- reportEdges(by.cluster, mst=mst, clusters=NULL, use.dimred="TSNE")
+
+
+map.tscan <- mapCellsToEdges(sce_obj_permuted, mst=mst, use.dimred="PCA")
+tscan.pseudo <- orderCells(map.tscan, mst=mst)
+head(tscan.pseudo)
+
+#common.pseudo <- averagePseudotime(tscan.pseudo, outgroup=params$omega) 
+#plotTSNE(sce_obj_permuted, colour_by=I(common.pseudo), 
+#        text_by="label", text_colour="red") +
+#    geom_line(data=line.data, mapping=aes(x= tSNE_1, y= tSNE_2, group=edge))
+
+
+# Run a minimum spanning tree (MST) on cluster centroids to provide a pseudotime ordering of cells
+pseudo.mnn <- TSCAN::quickPseudotime(sce_obj_permuted, use.dimred="PCA", outgroup=params$omega, start=params$start_clust)
+mnn.pseudo <- averagePseudotime(pseudo.mnn$ordering)
+
+##### Add pseudotime to sce object
+sce_obj_permuted$Pseudotime <- mnn.pseudo
+
+plotTSNE(sce_obj_permuted, colour_by=I(mnn.pseudo), text_by="label", text_colour="red") +
+    geom_line(data=pseudo.mnn$connected$TSNE, mapping=aes(x= tSNE_1, y= tSNE_2, group=edge))
+
+#plot(pseudo.mnn$mst)
+```
+
+***
+
+##### Clusters
+
+t-SNE plot with each point indicating a cell and colored according to its clusters assignment. The MST obtained using a TSCAN-like algorithm is overlaid on top.
+ 
+```{r tscan_lineage_clust_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+plotTSNE(sce_obj_permuted, colour_by="clust") + 
+    geom_line(data=line.data, mapping=aes(x=tSNE_1, y=tSNE_2, group=edge))
+
+#plot(pseudo.mnn$mst)
+```
+
+```{r tscan_tweaking_mst_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval=FALSE}
+##### Tweaking the MST
+
+pseudo.og <- TSCAN::quickPseudotime(sce_obj_permuted, use.dimred="PCA", outgroup=params$omega, start=params$start_clust)
+plot(pseudo.og$mst)
+
+pseudo.mnn <- TSCAN::quickPseudotime(sce_obj_permuted, use.dimred="PCA", start=params$start_clust, with.mnn=TRUE)
+mnn.pseudo <- averagePseudotime(pseudo.mnn$ordering)
+plotTSNE(sce_obj_permuted, colour_by=I(mnn.pseudo), text_by="label", text_colour="red") +
+    geom_line(data=pseudo.mnn$connected$TSNE, mapping=aes(x= tSNE_1, y= tSNE_2, group=edge))
+
+#### Principal curves
+
+sce.sling <- slingshot(sce_obj_permuted, reducedDim='PCA', start.clus = params$start_clust)
+head(sce.sling$slingPseudotime_1)
+
+embedded <- embedCurves(sce.sling, "TSNE")
+embedded <- slingCurves(embedded)[[1]] # only 1 path.
+embedded <- data.frame(embedded$s[embedded$ord,])
+
+plotTSNE(sce.sling, colour_by="slingPseudotime_1") +
+    geom_path(data=embedded, aes(x= tSNE_1, y= tSNE_2), size=1.2)
+
+
+sce.sling2 <- slingshot(sce_obj_permuted, cluster=colLabels(sce_obj_permuted), reducedDim='PCA', start.clus = params$start_clust)
+pseudo.paths <- slingPseudotime(sce.sling2)
+head(pseudo.paths)
+
+sce_obj_permuted <- runUMAP(sce_obj_permuted, dimred="PCA")
+reducedDim(sce.sling2, "UMAP") <- reducedDim(sce_obj_permuted, "UMAP")
+
+# Taking the rowMeans just gives us a single pseudo-time for all cells. Cells
+# in segments that are shared across paths have similar pseudo-time values in 
+# all paths anyway, so taking the rowMeans is not particularly controversial.
+shared.pseudo <- rowMeans(pseudo.paths, na.rm=TRUE)
+
+# Need to loop over the paths and add each one separately.
+gg <- plotUMAP(sce.sling2, colour_by=I(shared.pseudo))
+embedded <- embedCurves(sce.sling2, "UMAP")
+embedded <- slingCurves(embedded)
+for (path in embedded) {
+    embedded <- data.frame(path$s[path$ord,])
+    gg <- gg + geom_path(data=embedded, aes(x= UMAP1, y= UMAP2), size=1.2)
+}
+
+gg
+
+curve.assignments <- slingBranchID(sce.sling2)
+table(curve.assignments)
+
+sce.sling3 <- slingshot(sce_obj_permuted, cluster=colLabels(sce_obj_permuted), 
+    reducedDim='PCA', start.clus = params$start_clust, approx_points=100)
+pseudo.paths3 <- slingPseudotime(sce.sling3)
+head(pseudo.paths3)
+
+sce.sling4 <- slingshot(sce_obj_permuted, cluster=colLabels(sce_obj_permuted), 
+    reducedDim='PCA', start.clus = params$start_clust, approx_points=100, omega=params$omega)
+pseudo.paths4 <- slingPseudotime(sce.sling4)
+head(pseudo.paths4)
+
+shared.pseudo <- rowMeans(pseudo.paths, na.rm=TRUE)
+gg <- plotUMAP(sce.sling4, colour_by=I(shared.pseudo))
+embedded <- embedCurves(sce.sling4, "UMAP")
+embedded <- slingCurves(embedded)
+for (path in embedded) {
+    embedded <- data.frame(path$s[path$ord,])
+    gg <- gg + geom_path(data=embedded, aes(x= UMAP1, y= UMAP2), size=1.2)
+}
+gg
+```
+
+***
+
+#### Genes of interest {.tabset}
+
+##### Heatmap
+
+Heatmap of the expression of the user-defined genes. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r gois_heatmap_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Extract expression and pseudotime
+# Suppose you have pseudotime stored in metadata
+pseudotime <- sce_obj_permuted$Pseudotime  # replace with actual column
+
+annotation <- seurat_obj_permuted@meta.data[, c("dataset", "clust", "percentage_mt_genes", "library_size", "nCount_RNA", "nFeature_RNA", "doublets_score")]
+annotation <- cbind(annotation, pseudotime)
+
+
+# Extract scaled expression data
+heatmap_data <- FetchData(seurat_obj, vars = genes)
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj_permuted$Pseudotime)
+plotHeatmap(sce_obj_permuted[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=genes,
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+##### Explression plots
+
+Expression of the user-defined genes plotted as a function of the increasing pseudotime.
+
+```{r gois_smoothed_curves_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Extract scaled expression for these genes
+expr_mat <- FetchData(seurat_obj_permuted, vars = genes)
+
+# Combine with pseudotime
+df <- cbind(pseudotime = pseudotime, expr_mat) %>%
+  tidyr::pivot_longer(cols = all_of(genes), 
+                      names_to = "gene", values_to = "expression")
+
+ggplot(df, aes(x = pseudotime, y = expression, color = gene)) +
+  geom_smooth(se = FALSE, method = "loess", span = 1) +
+  theme_classic() +
+  labs(x = "Pseudotime", y = "Expression", color = "Gene") +
+  theme(legend.position = "right")
+
+
+# Faceted Plots
+# If overlapping curves are too busy, facet each gene separately:
+ggplot(df, aes(x = pseudotime, y = expression)) +
+  geom_smooth(se = FALSE, color = "darkred", method = "loess") +
+  facet_wrap(~ gene, scales = "fixed", ncol = 3) +  # FIXED y-axis
+  theme_bw() +
+  labs(x = "Pseudotime", y = "Expression")
+```
+
+***
+
+##### Explression plots (Z-scores)
+
+Expression (Z-scores) of the user-defined genes plotted as a function of the increasing pseudotime.
+
+```{r gois_smoothed_curves_z_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+df <- df %>%
+  group_by(gene) %>%
+  mutate(expression_scaled = scale(expression))
+
+ggplot(df, aes(x = pseudotime, y = expression_scaled, color = gene)) +
+  geom_smooth(se = FALSE, method = "loess", span = 1) +
+  theme_classic() +
+  labs(x = "Pseudotime", y = "Expression", color = "Gene") +
+  theme(legend.position = "right")
+
+
+ggplot(df, aes(x = pseudotime, y = expression_scaled)) +
+  geom_smooth(se = FALSE, color = "darkred", method = "loess") +
+  facet_wrap(~ gene, scales = "fixed") +
+  theme_bw() +
+  labs(x = "Pseudotime", y = "Expression (Z-score)")
+```
+
+***
+
+##### t-SNE plots
+
+Per-gene t-SNE plots with each point indicating a cell and colored according to expression of use-defined genes.
+
+```{r gois_tsne_plot_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Generate one plot per gene (faceted automatically if combine=TRUE)
+FeaturePlot(seurat_obj_permuted,
+            features = genes,
+            reduction = "TSNE",     # use t-SNE coordinates
+            cols = c("grey", "darkorchid4"),  # low → high expression
+            combine = TRUE,         # one panel per gene
+            pt.size = 0.1) & 
+  theme(
+    plot.title = element_text(size=12),
+    axis.title = element_text(size=10),
+    axis.text  = element_text(size=8),
+    legend.text = element_text(size=8),
+    legend.title = element_text(size=9)
+  )
+```
+
+***
+
+#### Changes along a trajectory {.tabset}
+
+In order to identify genes with significant changes with respect to individua pseudotimes a natural spline is fitted to the expression of each gene, allowing us to model a range of non-linear relationships in the data. An analysis of variance (ANOVA) is then performed to determine if any of the spline coefficients are significantly non-zero, i.e., there is some significant trend with respect to pseudotime.
+<br>
+**NOTE**: The table and plots presented below indicate change in expression levels in comparison to **cluster `r params$start_clust`**.
+
+##### Table
+
+```{r tscan_anova_test_pseudotime_table_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Include the pseudotimes in the colData.
+sce_obj_permuted_anova <- sce_obj_permuted
+sce_obj_permuted_anova$Pseudotime <- pathStat(tscan.pseudo)[,1]
+
+
+# Testing against the first path again.
+pseudo <- TSCAN::testPseudotime(sce_obj_permuted_anova, pseudotime=sce_obj_permuted_anova$Pseudotime)
+pseudo$SYMBOL <- rownames(sce_obj_permuted_anova)
+sorted <- pseudo[order(pseudo$logFC, decreasing = TRUE),]
+#sorted <- pseudo[order(pseudo$p.value, decreasing = FALSE),]
+
+##### Generate a table with features annotations
+dt.table <- DT::datatable( data = as.data.frame(sorted), filter = list(position = 'top', clear = FALSE), rownames = TRUE, extensions = c('Buttons','Scroller','FixedColumns'), options = list(pageLength = 10, dom = 'Bfrltip', buttons = c('excel', 'csv', 'pdf','copy'), scrollX = TRUE, fixedColumns = list(leftColumns = 1), deferRender = TRUE, scrollY = "333px", scroller = TRUE), width = 800, height = 550, caption = htmltools::tags$caption( style = 'caption-side: top; text-align: left; color:grey; font-size:100%; width: 100%'), escape = FALSE) %>%
+  DT::formatStyle( columns = colnames(as.data.frame(sorted)), 'text-align' = 'center' )
+```
+
+```{r tscan_anova_test_pseudotime_table_print_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='asis', out.width = "800px", eval = params$run_tscan}
+
+dt.table
+```
+
+***
+
+##### Heatmaps {.tabset}
+
+###### Top genes
+
+Heatmap of the expression of the top 25 genes that increase and decrease in expression with increasing pseudotime. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r tscan_anova_test_pseudotime_plots_heatmap_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+up.right <- sorted[sorted$logFC > 0, ]
+up.right <- up.right[ 1:25, ]
+
+up.left <- sorted[sorted$logFC < 0,]
+up.left <- up.left[ 1:25, ]
+
+top_genes <- c(up.right$SYMBOL, up.left$SYMBOL)
+
+# Remove MALAT1 from visualization since it appears ubiquitously expressed across cells and dominates the expression on the plots. It may dilute color scales in heatmaps because its expression range is orders of magnitude higher than other genes
+top_genes <- setdiff(top_genes, "MALAT1")
+
+# Extract expression and pseudotime
+# Suppose you have pseudotime stored in metadata
+pseudotime <- sce_obj_permuted$Pseudotime  # replace with actual column
+
+annotation <- seurat_obj_permuted@meta.data[, c("dataset", "clust", "percentage_mt_genes", "library_size", "nCount_RNA", "nFeature_RNA", "doublets_score")]
+annotation <- cbind(annotation, pseudotime)
+
+# Extract scaled expression data for selected genes
+heatmap_data <- FetchData(seurat_obj_permuted, vars = top_genes)
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj_permuted$Pseudotime)
+plotHeatmap(sce_obj_permuted[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=top_genes,
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+###### Genes of interest
+
+Heatmap of the expression of the user-defined genes. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r tscan_anova_test_pseudotime_plots_heatmap_gois_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+# Extract scaled expression data
+heatmap_data <- FetchData(seurat_obj_permuted, vars = genes)
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj_permuted$Pseudotime)
+plotHeatmap(sce_obj_permuted[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=genes,
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+###### Up-regulated genes
+
+Heatmap of the expression of the top 50 genes that increase in expression with increasing pseudotime. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r tscan_anova_test_pseudotime_plots_heatmap_up_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+up.right <- sorted[sorted$logFC > 0,]
+head(up.right, 6)
+
+# Remove MALAT1 from visualization since it appears ubiquitously expressed across cells and dominates the expression on the plots. It may dilute color scales in heatmaps because its expression range is orders of magnitude higher than other genes
+up.right <- up.right[ up.right$SYMBOL != "MALAT1" ,]
+
+# Extract scaled expression data for selected genes
+heatmap_data <- FetchData(seurat_obj, vars = head(up.right$SYMBOL, 50))
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj_permuted$Pseudotime)
+plotHeatmap(sce_obj_permuted[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=head(up.right$SYMBOL, 50),
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+###### Down-regulated genes
+
+Heatmap of the expression of the top 50 genes that decrease in expression with increasing pseudotime. Each column represents a cell that is mapped to this path and is ordered by its pseudotime value.
+
+```{r tscan_anova_test_pseudotime_plots_heatmap_down_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+up.left <- sorted[sorted$logFC < 0,]
+head(up.left, 6)
+
+# Remove MALAT1 from visualization since it appears ubiquitously expressed across cells and dominates the expression on the plots. It may dilute color scales in heatmaps because its expression range is orders of magnitude higher than other genes
+up.left <- up.left[ up.left$SYMBOL != "MALAT1" ,]
+
+# Extract scaled expression data for selected genes
+heatmap_data <- FetchData(seurat_obj, vars = head(up.left$SYMBOL, 50))
+
+# Order cells by pseudotime
+ordered_cells <- order(pseudotime)
+heatmap_data <- heatmap_data[ordered_cells, ]
+
+# Ensure scaling only happens on genes with non-zero variance
+#heatmap_data <- heatmap_data[apply(heatmap_data, 1, sd) > 0, ]
+
+# Scale and remove rows with NA/Inf after scaling
+heatmap_matrix <- t(scale(t(heatmap_data)))
+
+# Remove rows with NA/Inf
+heatmap_matrix <- t(heatmap_matrix[complete.cases(heatmap_matrix), ])
+
+# Make sure that data and annotation are of the same length
+heatmap_matrix <- heatmap_matrix[ , colnames(heatmap_matrix) %in% rownames(annotation) , drop = FALSE ]
+annotation <- annotation[ rownames(annotation) %in% colnames(heatmap_matrix), , drop = FALSE ]
+
+# Define color palette (blue-white-red)
+heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+# Define custom colors for one annotation
+ann_colors <- list(
+  clust = c("0" = "brown1", "1" = "dodgerblue", "2" = "grey", "3" = "gold", "4" = "palegreen3", "5" = "peru", "6" = "bisque"),
+  dataset = c("S3" = "brown1", "S1" = "dodgerblue")
+)
+
+# Keep only as many cluster colours as many clusters available in the data
+ann_colors$clust <- ann_colors$clust[1:length(unique(annotation$clust))]
+
+pheatmap(heatmap_matrix,
+         annotation_col = annotation,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,
+         cluster_rows = TRUE,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "ward.D2",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize = 6,
+         fontsize_row = 6,
+         color = heatmap_colors,
+         scale = "none")
+
+on.first.path <- !is.na(sce_obj_permuted$Pseudotime)
+plotHeatmap(sce_obj_permuted[,on.first.path], order_columns_by="Pseudotime", 
+    colour_columns_by="label", features=head(up.left$SYMBOL, 50),
+    center=TRUE, swap_rownames=NULL)
+```
+
+***
+
+##### Plots {.tabset}
+
+###### Up-regulated genes
+
+Expression of the top 6 genes that increase in expression with increasing pseudotime. Each point represents a cell that is mapped to this path and is colored by the assigned cluster.
+
+```{r tscan_anova_test_pseudotime_plots_up_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+best <- head(up.right$SYMBOL, 6)
+plotExpression(sce_obj_permuted, features=best, swap_rownames=NULL,
+    x="Pseudotime", colour_by="label")
+
+```
+
+***
+
+###### Down-regulated genes
+
+Expression of the top 6 genes that decrease in expression with increasing pseudotime. Each point represents a cell that is mapped to this path and is colored by the assigned cluster.
+
+```{r tscan_anova_test_pseudotime_plots_down_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_tscan}
+
+best <- head(up.left$SYMBOL, 6)
+plotExpression(sce_obj_permuted, features=best, swap_rownames=NULL,
+    x="Pseudotime", colour_by="label")
+```
+
+
+***
+
+## Monocle 3 {.tabset}
+
+### Original data {.tabset}
+
+#### Inferred lineage {.tabset}
+
+*[Monocle 3](https://cole-trapnell-lab.github.io/monocle3/){target="_blank"}* is used for constructing single-cell trajectories and performing pseudotime analysis. It allows researchers to infer the developmental or differentiation paths of cells based on their gene expression profiles. The process involves learning a graph structure that represents the relationships between cells, ordering cells along this graph to represent their progression through a biological process, and identifying genes that change expression along these trajectories. 
+
+##### Pseudotime
+
+t-SNE plot with each point indicating a cell and colored according to its pseudotime assignment.
+
+```{r monocle3_pseudotime, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Convert Seurat to Monocle3 CDS
+
+# Assume your object is called `seurat_obj`
+# One of the requirements of Monocle 3 is that the dimensional reduction names are all upper-case (see https://github.com/satijalab/seurat-wrappers/issues/52)
+#seurat_obj[["UMAP"]] <- seurat_obj[["umap"]]
+#seurat_obj[["TSNE"]] <- seurat_obj[["tsne"]]
+#seurat_obj[["PCA"]] <- seurat_obj[["pca"]]
+
+seurat_obj <- UpdateSeuratObject(seurat_obj)
+cds <- as.cell_data_set(seurat_obj)
+
+# NOTE: Monocle3 developers chose to require UMAP dimension reduction, t-SNE is not supported (https://github.com/cole-trapnell-lab/monocle3/issues/242), although the documentation states differently ( https://rdrr.io/github/cole-trapnell-lab/monocle3/man/learn_graph.html). Hence, trick the data a bit and overwrite the UMAP with tSNE (https://github.com/cole-trapnell-lab/monocle3/issues/241)
+
+cds@int_colData@listData$reducedDims@listData$UMAP <- cds@int_colData@listData$reducedDims$TSNE
+
+#cds <- cluster_cells(cds, reduction_method = "tSNE")  # required before learning graph
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+
+# Deal with the issue of missing gene names in the cds object ( see https://github.com/cole-trapnell-lab/monocle3/issues/438)
+rowData(cds)$gene_name <- rownames(cds)
+rowData(cds)$gene_short_name <- rowData(cds)$gene_name
+
+
+##### Choose a Root Cell/Cluster
+
+# Pick a root cell (you can also pick based on known markers or cluster)
+#cds <- order_cells(cds)  # interactive if no root provided
+
+# OR specify known root cluster:
+cds <- order_cells(cds, root_cells = colnames(cds)[which(colData(cds)$clust == "0")])
+
+##### Plot Trajectory
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_groups_by_cluster = TRUE,
+           label_leaves = TRUE,
+           label_branch_points = TRUE,
+           graph_label_size=3,
+           cell_size = 1)
+
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           show_trajectory_graph = FALSE,
+           graph_label_size=3,
+           cell_size = 1)
+```
+
+***
+
+##### Clusters
+
+t-SNE plot with each point indicating a cell and colored according to its clusters assignment.
+
+```{r monocle3_clust, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+#plot_cells(cds,
+#           color_cells_by = "clust",
+#           label_groups_by_cluster = TRUE,
+#           label_leaves = TRUE,
+#           label_branch_points = TRUE,
+#           graph_label_size=3,
+#           cell_size = 1)
+
+#plot_cells(cds,
+#           color_cells_by = "clust",
+#           label_groups_by_cluster = FALSE,
+#           label_leaves = TRUE,
+#           label_branch_points = TRUE,
+#           graph_label_size=3,
+#           cell_size = 1)
+
+
+plot_cells(cds,
+           color_cells_by = "clust",
+           label_cell_groups = FALSE,
+           label_leaves = TRUE,
+           label_branch_points = TRUE,
+           graph_label_size = 3,
+           cell_size = 1)
+
+
+plot_cells(cds,
+           color_cells_by = "clust",
+           show_trajectory_graph = FALSE,
+           graph_label_size=3,
+           cell_size = 1)
+```
+
+***
+
+##### Genes of interest
+
+t-SNE plots with each point indicating a cell and colored according to expression levels of user-defined genes.
+
+```{r monocle3_gois, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+plot_cells(cds, genes=genes,
+           graph_label_size = 3,
+           cell_size = 1)
+
+plot_cells(cds, genes=genes,
+           show_trajectory_graph = FALSE,
+           graph_label_size = 3,
+           cell_size = 1)
+```
+
+***
+
+#### Changes along a trajectory {.tabset}
+
+Moran’s I test is performed to find genes that draws on a powerful technique in spatial correlation analysis. Moran’s I is a measure of multi-directional and multi-dimensional spatial autocorrelation. The statistic tells you whether cells at nearby positions on a trajectory will have similar (or dissimilar) expression levels for the gene being tested. Although both Pearson correlation and Moran’s I ranges from -1 to 1, the interpretation of Moran’s I is slightly different: +1 means that nearby cells will have perfectly similar expression; 0 represents no correlation, and -1 means that neighboring cells will be anti-correlated.
+
+##### Table
+
+```{r monocle3_genes_table, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Find Genes That Vary Along Pseudotime
+# Identify genes that change along pseudotime
+gene_fits <- graph_test(cds, neighbor_graph = "principal_graph", cores = 4)
+
+# Order the table based on q_value
+
+gene_fits_ordered <- gene_fits[ order(gene_fits$q_value), ]
+
+# Filter significant genes
+pseudotime_genes <- subset(gene_fits_ordered, q_value < 0.05)
+
+##### Generate a table with features annotations
+dt.table <- DT::datatable( data = as.data.frame(pseudotime_genes), filter = list(position = 'top', clear = FALSE), rownames = TRUE, extensions = c('Buttons','Scroller','FixedColumns'), options = list(pageLength = 10, dom = 'Bfrltip', buttons = c('excel', 'csv', 'pdf','copy'), scrollX = TRUE, fixedColumns = list(leftColumns = 1), deferRender = TRUE, scrollY = "333px", scroller = TRUE), width = 800, height = 550, caption = htmltools::tags$caption( style = 'caption-side: top; text-align: left; color:grey; font-size:100%; width: 100%'), escape = FALSE) %>%
+  DT::formatStyle( columns = colnames(as.data.frame(pseudotime_genes)), 'text-align' = 'center' )
+```
+
+```{r monocle3_genes_table_print, echo = FALSE, warning=FALSE, message=FALSE, results='asis', out.width = "800px", eval = params$run_monocle3}
+
+dt.table
+```
+
+***
+
+##### Expression plots
+
+```{r monocle3_genes_expression_plot, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Plot Gene Expression Trends
+plot_genes_in_pseudotime(cds[rownames(pseudotime_genes)[1:4], ], color_cells_by="clust")
+```
+
+***
+
+##### Violin plots
+
+```{r monocle3_genes_violin_plot, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Regression analysis
+cds_subset <- cds[rowData(cds)$gene_short_name %in% pseudotime_genes$gene_name[1:4], ]
+
+plot_genes_violin(cds_subset, group_cells_by="clust", ncol=2) +
+      theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+***
+
+##### Sina plots
+
+```{r monocle3_genes_sina_plot, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+plot_genes_hybrid(cds_subset, group_cells_by="clust", ncol=2) +
+      theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+***
+
+
+### Permuted data {.tabset}
+
+#### Inferred lineage {.tabset}
+
+*[Monocle 3](https://cole-trapnell-lab.github.io/monocle3/){target="_blank"}* is used for constructing single-cell trajectories and performing pseudotime analysis. It allows researchers to infer the developmental or differentiation paths of cells based on their gene expression profiles. The process involves learning a graph structure that represents the relationships between cells, ordering cells along this graph to represent their progression through a biological process, and identifying genes that change expression along these trajectories. 
+
+##### Pseudotime
+
+t-SNE plot with each point indicating a cell and colored according to its pseudotime assignment.
+
+```{r monocle3_pseudotime_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Convert Seurat to Monocle3 CDS
+
+# Assume your object is called `seurat_obj_permuted`
+# One of the requirements of Monocle 3 is that the dimensional reduction names are all upper-case (see https://github.com/satijalab/seurat-wrappers/issues/52)
+#seurat_obj_permuted[["UMAP"]] <- seurat_obj_permuted[["umap"]]
+#seurat_obj_permuted[["TSNE"]] <- seurat_obj_permuted[["tsne"]]
+#seurat_obj_permuted[["PCA"]] <- seurat_obj_permuted[["pca"]]
+
+seurat_obj_permuted <- UpdateSeuratObject(seurat_obj_permuted)
+cds <- as.cell_data_set(seurat_obj_permuted)
+
+# NOTE: Monocle3 developers chose to require UMAP dimension reduction, t-SNE is not supported (https://github.com/cole-trapnell-lab/monocle3/issues/242), although the documentation states differently ( https://rdrr.io/github/cole-trapnell-lab/monocle3/man/learn_graph.html). Hence, trick the data a bit and overwrite the UMAP with tSNE (https://github.com/cole-trapnell-lab/monocle3/issues/241)
+
+cds@int_colData@listData$reducedDims@listData$UMAP <- cds@int_colData@listData$reducedDims$TSNE
+
+#cds <- cluster_cells(cds, reduction_method = "tSNE")  # required before learning graph
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+
+# Deal with the issue of missing gene names in the cds object ( see https://github.com/cole-trapnell-lab/monocle3/issues/438)
+rowData(cds)$gene_name <- rownames(cds)
+rowData(cds)$gene_short_name <- rowData(cds)$gene_name
+
+
+##### Choose a Root Cell/Cluster
+
+# Pick a root cell (you can also pick based on known markers or cluster)
+#cds <- order_cells(cds)  # interactive if no root provided
+
+# OR specify known root cluster:
+cds <- order_cells(cds, root_cells = colnames(cds)[which(colData(cds)$clust == "0")])
+
+##### Plot Trajectory
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_groups_by_cluster = TRUE,
+           label_leaves = TRUE,
+           label_branch_points = TRUE,
+           graph_label_size=3,
+           cell_size = 1)
+```
+
+***
+
+##### Clusters
+
+t-SNE plot with each point indicating a cell and colored according to its clusters assignment.
+
+```{r monocle3_clust_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+#plot_cells(cds,
+#           color_cells_by = "clust",
+#           label_groups_by_cluster = TRUE,
+#           label_leaves = TRUE,
+#           label_branch_points = TRUE,
+#           graph_label_size=3,
+#           cell_size = 1)
+
+#plot_cells(cds,
+#           color_cells_by = "clust",
+#           label_groups_by_cluster = FALSE,
+#           label_leaves = TRUE,
+#           label_branch_points = TRUE,
+#           graph_label_size=3,
+#           cell_size = 1)
+
+
+plot_cells(cds,
+           color_cells_by = "clust",
+           label_cell_groups = FALSE,
+           label_leaves = TRUE,
+           label_branch_points = TRUE,
+           graph_label_size = 3,
+           cell_size = 1)
+```
+
+***
+
+##### Genes of interest
+
+t-SNE plots with each point indicating a cell and colored according to expression levels of user-defined genes.
+
+```{r monocle3_gois_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+plot_cells(cds, genes=genes,
+           graph_label_size = 3,
+           cell_size = 1)
+```
+
+***
+
+#### Changes along a trajectory {.tabset}
+
+Moran’s I test is performed to find genes that draws on a powerful technique in spatial correlation analysis. Moran’s I is a measure of multi-directional and multi-dimensional spatial autocorrelation. The statistic tells you whether cells at nearby positions on a trajectory will have similar (or dissimilar) expression levels for the gene being tested. Although both Pearson correlation and Moran’s I ranges from -1 to 1, the interpretation of Moran’s I is slightly different: +1 means that nearby cells will have perfectly similar expression; 0 represents no correlation, and -1 means that neighboring cells will be anti-correlated.
+
+##### Table
+
+```{r monocle3_genes_table_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Find Genes That Vary Along Pseudotime
+# Identify genes that change along pseudotime
+gene_fits <- graph_test(cds, neighbor_graph = "principal_graph", cores = 4)
+
+# Order the table based on q_value
+
+gene_fits_ordered <- gene_fits[ order(gene_fits$q_value), ]
+
+# Filter significant genes
+pseudotime_genes <- subset(gene_fits_ordered, q_value < 0.05)
+
+##### Generate a table with features annotations
+dt.table <- DT::datatable( data = as.data.frame(pseudotime_genes), filter = list(position = 'top', clear = FALSE), rownames = TRUE, extensions = c('Buttons','Scroller','FixedColumns'), options = list(pageLength = 10, dom = 'Bfrltip', buttons = c('excel', 'csv', 'pdf','copy'), scrollX = TRUE, fixedColumns = list(leftColumns = 1), deferRender = TRUE, scrollY = "333px", scroller = TRUE), width = 800, height = 550, caption = htmltools::tags$caption( style = 'caption-side: top; text-align: left; color:grey; font-size:100%; width: 100%'), escape = FALSE) %>%
+  DT::formatStyle( columns = colnames(as.data.frame(pseudotime_genes)), 'text-align' = 'center' )
+```
+
+```{r monocle3_genes_table_print_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='asis', out.width = "800px", eval = params$run_monocle3}
+
+dt.table
+```
+
+
+***
+
+##### Expression plots
+
+```{r monocle3_genes_expression_plot_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Plot Gene Expression Trends
+plot_genes_in_pseudotime(cds[rownames(pseudotime_genes)[1:4], ], color_cells_by="clust")
+```
+
+***
+
+##### Violin plots
+
+```{r monocle3_genes_violin_plot_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+##### Regression analysis
+cds_subset <- cds[rowData(cds)$gene_short_name %in% pseudotime_genes$gene_name[1:4], ]
+
+plot_genes_violin(cds_subset, group_cells_by="clust", ncol=2) +
+      theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+***
+
+##### Sina plots
+
+```{r monocle3_genes_sina_plot_permuted, echo = FALSE, warning=FALSE, message=FALSE, results='hide', out.width = "800px", eval = params$run_monocle3}
+
+plot_genes_hybrid(cds_subset, group_cells_by="clust", ncol=2) +
+      theme(axis.text.x=element_text(angle=45, hjust=1))
+```
+
+```{r save_data_rds, comment = NA}
+
+saveRDS(sce_obj, file = paste0(params$outFolder, "/", params$report_name, ".rds")) 
+```
+
+***
+
+## Addendum
+
+<details>
+<summary>Parameters</summary>
+<font size="2">
+
+```{r params_info, comment = NA}
+for ( i in 1:length(params) ) {
+  cat(paste("Parameter: ", names(params)[i], "\nValue: ", paste(unlist(params[i]), collapse = ","), "\n\n", sep=""))
+}
+```
+
+</font>
+</details>
+
+<details>
+<summary>Reporter details</summary>
+<font size="2">
+
+```{r reporter_details, comment = NA}
+cat(paste0("The report was generated by \"", Sys.info()[ "user"], "\" using \"",  Sys.info()[ "nodename"], "\" node and \"",  Sys.info()[ "sysname"], "\" operating system."))
+```
+
+</font>
+</details>
+
+<details>
+<summary>Session information</summary>
+<font size="2">
+
+```{r session_info, comment = NA}
+devtools::session_info()
+```
+
+</font>
+</details>
+
