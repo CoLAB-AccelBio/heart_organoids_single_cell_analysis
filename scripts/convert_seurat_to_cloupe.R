@@ -1,16 +1,7 @@
-# https://github.com/10XGenomics/loupeR
-
-##### First, activate conda env with R version compatible with loupeR package
-conda activate r-4.3.3
-
-
-##### Now start R
-
 library(loupeR)
 loupeR::setup()
 library(SeuratObject)
 library(SingleCellExperiment)
-
 
 
 

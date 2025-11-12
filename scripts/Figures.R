@@ -1,15 +1,3 @@
-##### Login to Lobito with -Y
-
-ssh -Y lobito
-
-
-
-##### First, activate conda env with R version compatible with loupeR package
-conda activate r_sc_trajectory_env
-
-
-
-##### Now start R
 
 library(devtools)
 library(monocle3)
