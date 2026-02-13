@@ -1,5 +1,9 @@
 # Single-cell analysis of heart organoids
 
+[![bioRxiv DOI](https://img.shields.io/badge/bioRxiv-10.1101/2025.01.10.632325-blue)](https://www.biorxiv.org/content/10.1101/2025.01.10.632325)
+[![GEO GSE309829](https://img.shields.io/badge/GEO-GSE309829-orange)](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE309829)
+[![SRA PRJNA1356374](https://img.shields.io/badge/SRA-PRJNA1356374-green)](https://www.ncbi.nlm.nih.gov/sra/PRJNA1356374)
+
 🫀 Pipeline for analysing scRNA-seq data from human pluripotent stem cell-derived heart epicardium-myocardium organoids.
 
 **Associated manuscript:** *Recreating coronary vascularization and sympathetic innervation of myocardium on a human pluripotent stem cell-derived heart assembloid* (submitted to _Cell Reports_).
