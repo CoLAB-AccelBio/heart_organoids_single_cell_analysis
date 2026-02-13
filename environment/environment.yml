@@ -1,0 +1,36 @@
+name: heart_organoids_sc
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - r-base=4.3.3
+  - r-seurat=4.4.0
+  - bioconductor-scran=1.22.1
+  - bioconductor-scater=1.22.0
+  - bioconductor-scdblfinder=1.8.0
+  - bioconductor-tscan=1.44.0
+  - bioconductor-monocle3=1.3.1
+  - bioconductor-slingshot=2.2.1
+  - bioconductor-tradeseq=1.8.0
+  - r-clustree=0.5.1
+  - r-ggplot2=3.5.1
+  - r-dplyr=1.1.4
+  - r-tidyr=1.3.1
+  - r-reshape2=1.4.4
+  - r-rcolorbrewer=1.1_3
+  - r-pheatmap=1.0.12
+  - r-dt=0.31
+  - r-ggridges=0.5.6
+  - r-ggrepel=0.9.5
+  - r-optparse=1.7.5
+  - r-devtools=2.4.5
+  - r-louper=1.0.0
+  - r-seuratwrappers=0.3.1
+  - r-kableextra=1.4.1
+  - r-rmarkdown=2.27
+  - r-knitr=1.48
+  - pip
+  - pip:
+    - anndata2ri
+    - scanpy

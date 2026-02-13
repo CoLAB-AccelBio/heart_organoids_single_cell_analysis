@@ -1,0 +1,29 @@
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+renv/
+*.rds
+
+# Data (if large)
+data/raw/*.gz
+*.h5
+*.h5ad
+*.h5seurat
+
+# Results
+results/figures/*.png
+results/figures/*.pdf
+results/tables/*.csv
+results/tables/*.tsv
+
+# System
+.DS_Store
+.obsidian/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
