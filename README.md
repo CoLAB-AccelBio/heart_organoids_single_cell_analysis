@@ -1,7 +1,7 @@
 # Single-cell analysis of heart organoids
 
 [![GEO GSE309829](https://img.shields.io/badge/GEO-GSE309829-orange)](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE309829)
-[![SRA PRJNA1356374](https://img.shields.io/badge/SRA-PRJNA1356374-green)](https://www.ncbi.nlm.nih.gov/sra/PRJNA1356374)
+[![SRA PRJNA1356374](https://img.shields.io/badge/SRA-PRJNA1356374-green)](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1356374)
 
 🫀 Pipeline for analysing scRNA-seq data from human pluripotent stem cell-derived heart epicardium-myocardium organoids.
 
