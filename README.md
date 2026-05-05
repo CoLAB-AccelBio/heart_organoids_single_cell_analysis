@@ -5,7 +5,7 @@
 
 🫀 Pipeline for analysing scRNA-seq data from human pluripotent stem cell-derived heart epicardium-myocardium organoids.
 
-**Associated manuscript:** [Modeling embryonic heart vascular plexus development and sympathetic innervation on a human heart organoid](https://pubmed.ncbi.nlm.nih.gov/41858891/))
+**Associated manuscript:** [Modeling embryonic heart vascular plexus development and sympathetic innervation on a human heart organoid](https://pubmed.ncbi.nlm.nih.gov/41858891/).
 
 ## Overview
 
