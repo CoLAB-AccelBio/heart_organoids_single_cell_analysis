@@ -5,7 +5,7 @@
 
 🫀 Pipeline for analysing scRNA-seq data from human pluripotent stem cell-derived heart epicardium-myocardium organoids.
 
-**Associated manuscript:** *Recreating coronary vascularization and sympathetic innervation of myocardium on a human pluripotent stem cell-derived heart assembloid* (submitted to _Cell Reports_).
+**Associated manuscript:** [Modeling embryonic heart vascular plexus development and sympathetic innervation on a human heart organoid](https://pubmed.ncbi.nlm.nih.gov/41858891/))
 
 ## Overview
 
